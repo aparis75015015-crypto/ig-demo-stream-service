@@ -60,7 +60,13 @@ async function tick() {
 }
 
 app.use((req, res, next) => { res.setHeader('Access-Control-Allow-Origin', cfg.origin); res.setHeader('Vary', 'Origin'); next() })
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'ig-demo-stream', latestOk: latest.ok, updatedAt: latest.updatedAt }))
+app.get('/health', (_req, res) => res.json({
+  ok: true,
+  service: 'ig-demo-stream',
+  latestOk: latest.ok,
+  error: latest.ok ? null : (latest.error || 'Unknown IG Demo error'),
+  updatedAt: latest.updatedAt,
+}))
 app.get('/snapshot', (_req, res) => res.status(latest.ok ? 200 : 503).json(latest))
 app.get('/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders()
