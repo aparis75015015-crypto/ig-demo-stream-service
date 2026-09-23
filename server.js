@@ -27,7 +27,10 @@ async function login() {
     body: JSON.stringify({ identifier: cfg.identifier, password: cfg.password }),
   })
   const body = await res.json().catch(() => ({}))
-  if (!res.ok || !body?.oauthToken?.access_token) {\n    const code = typeof body?.errorCode === 'string' ? body.errorCode.replace(/[^A-Za-z0-9._-]/g, '') : 'unknown'\n    throw new Error(`IG login failed (${res.status}; ${code})`)\n  }
+  if (!res.ok || !body?.oauthToken?.access_token) {
+    const code = typeof body?.errorCode === 'string' ? body.errorCode.replace(/[^A-Za-z0-9._-]/g, '') : 'unknown'
+    throw new Error(`IG login failed (${res.status}; ${code})`)
+  }
   oauth = { token: body.oauthToken.access_token, type: body.oauthToken.token_type || 'Bearer', expiresAt: Date.now() + (Number(body.oauthToken.expires_in || 60) - 10) * 1000 }
 }
 
