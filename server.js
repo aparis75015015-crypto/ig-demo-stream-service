@@ -74,12 +74,12 @@ function cleanSymbol(value) {
   return String(value || '').toUpperCase().replace(/[^A-Z]/g, '')
 }
 
-async function resolveEpic(symbol) {
+async function resolveEpic(symbol, forceSearch = false) {
   const key = cleanSymbol(symbol)
   const spec = instruments[key]
   if (!spec) throw new Error('Unsupported symbol')
-  if (resolvedEpics.has(key)) return resolvedEpics.get(key)
-  if (spec.epic) {
+  if (!forceSearch && resolvedEpics.has(key)) return resolvedEpics.get(key)
+  if (!forceSearch && spec.epic) {
     resolvedEpics.set(key, spec.epic)
     return spec.epic
   }
@@ -126,9 +126,17 @@ function quoteFromSnapshot(symbol, epic, snapshot = {}) {
 }
 
 async function getQuote(symbol) {
-  const epic = await resolveEpic(symbol)
-  const body = await igFetch(`/markets/${encodeURIComponent(epic)}`, '3')
-  return quoteFromSnapshot(symbol, epic, body.snapshot || {})
+  let epic = await resolveEpic(symbol)
+  try {
+    const body = await igFetch(`/markets/${encodeURIComponent(epic)}`, '3')
+    return quoteFromSnapshot(symbol, epic, body.snapshot || {})
+  } catch (error) {
+    if (!String(error.message).includes('epic.unavailable')) throw error
+    resolvedEpics.delete(symbol)
+    epic = await resolveEpic(symbol, true)
+    const body = await igFetch(`/markets/${encodeURIComponent(epic)}`, '3')
+    return quoteFromSnapshot(symbol, epic, body.snapshot || {})
+  }
 }
 
 function publish(value) {
@@ -180,8 +188,16 @@ app.get('/prices/:symbol', async (req, res) => {
   const resolution = allowedResolutions.has(String(req.query.resolution || '').toUpperCase()) ? String(req.query.resolution).toUpperCase() : 'MINUTE_5'
   const max = Math.min(500, Math.max(10, Number(req.query.max || 100)))
   try {
-    const epic = await resolveEpic(symbol)
-    const body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}`, '3')
+    let epic = await resolveEpic(symbol)
+    let body
+    try {
+      body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}`, '3')
+    } catch (error) {
+      if (!String(error.message).includes('epic.unavailable')) throw error
+      resolvedEpics.delete(symbol)
+      epic = await resolveEpic(symbol, true)
+      body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}`, '3')
+    }
     const rows = (Array.isArray(body.prices) ? body.prices : []).map(p => {
       const mid = pair => {
         const bid = Number(pair?.bid), ask = Number(pair?.ask)
