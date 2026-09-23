@@ -18,11 +18,11 @@ for (const [name, value] of Object.entries({ IG_API_KEY: cfg.apiKey, IG_IDENTIFI
 
 const instruments = {
   XAUUSD: { label: '🥇 XAUUSD — Gold', search: 'Gold', epic: cfg.goldEpic },
-  XAGUSD: { label: '🥈 XAGUSD — Silver', search: 'Silver', epic: 'CS.D.CFESILVER.CFE.IP' },
+  XAGUSD: { label: '🥈 XAGUSD — Silver', search: ['Silver', 'Spot Silver', 'XAG'], epic: 'CS.D.CFESILVER.CFE.IP' },
   BTCUSD: { label: '₿ BTCUSD — Bitcoin', search: 'Bitcoin', epic: 'CS.D.BITCOIN.CFD.IP' },
-  ETHUSD: { label: 'Ξ ETHUSD — Ethereum', search: 'Ether', epic: 'CS.D.ETHUSD.CFD.IP' },
-  SOLUSD: { label: '◎ SOLUSD — Solana', search: 'Solana', epic: 'CS.D.SOLUSD.CFD.IP' },
-  XRPUSD: { label: '✕ XRPUSD — XRP', search: 'Ripple', epic: 'CS.D.XRPUSD.CFD.IP' },
+  ETHUSD: { label: 'Ξ ETHUSD — Ethereum', search: ['Ether', 'Ethereum', 'ETH'], epic: 'CS.D.ETHUSD.CFD.IP' },
+  SOLUSD: { label: '◎ SOLUSD — Solana', search: ['Solana', 'SOL'], epic: 'CS.D.SOLUSD.CFD.IP' },
+  XRPUSD: { label: '✕ XRPUSD — XRP', search: ['Ripple', 'XRP'], epic: 'CS.D.XRPUSD.CFD.IP' },
   WTI: { label: '🛢️ WTI — US Oil', search: 'US Crude', epic: 'CC.D.CL.USS.IP' },
   BRENT: { label: '🛢️ BRENT — Brent Oil', search: 'Brent Crude', epic: 'CC.D.LCO.USS.IP' },
   COPPER: { label: '🟠 COPPER — Copper', search: 'Copper', epic: 'CS.D.CFECOPPER.CFE.IP' },
@@ -83,13 +83,18 @@ async function resolveEpic(symbol, forceSearch = false) {
     resolvedEpics.set(key, spec.epic)
     return spec.epic
   }
-  const result = await igFetch(`/markets?searchTerm=${encodeURIComponent(spec.search)}`, '1')
-  const markets = Array.isArray(result.markets) ? result.markets : []
-  const active = markets.find(m => m?.instrument?.epic && m?.snapshot?.marketStatus === 'TRADEABLE')
-  const first = active || markets.find(m => m?.instrument?.epic)
-  if (!first) throw new Error(`IG market not found for ${key}`)
-  resolvedEpics.set(key, first.instrument.epic)
-  return first.instrument.epic
+  const terms = Array.isArray(spec.search) ? spec.search : [spec.search]
+  for (const term of terms) {
+    const result = await igFetch(`/markets?searchTerm=${encodeURIComponent(term)}`, '1')
+    const markets = Array.isArray(result.markets) ? result.markets : []
+    const active = markets.find(m => m?.instrument?.epic && m?.snapshot?.marketStatus === 'TRADEABLE')
+    const first = active || markets.find(m => m?.instrument?.epic)
+    if (first) {
+      resolvedEpics.set(key, first.instrument.epic)
+      return first.instrument.epic
+    }
+  }
+  throw new Error(`IG market not found for ${key}`)
 }
 
 function quoteFromSnapshot(symbol, epic, snapshot = {}) {
