@@ -7,7 +7,7 @@ const cfg = {
   identifier: process.env.IG_IDENTIFIER,
   password: process.env.IG_PASSWORD,
   goldEpic: process.env.IG_GOLD_EPIC || 'CS.D.CFEGOLD.CFE.IP',
-  pollMs: Math.max(2000, Number(process.env.POLL_INTERVAL_MS || 5000)),
+  pollMs: Math.max(60000, Number(process.env.POLL_INTERVAL_MS || 60000)),
   port: Number(process.env.PORT || 3000),
   origin: process.env.ALLOWED_ORIGIN || '*',
 }
