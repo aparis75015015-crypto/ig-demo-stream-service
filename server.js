@@ -16,30 +16,64 @@ for (const [name, value] of Object.entries({ IG_API_KEY: cfg.apiKey, IG_IDENTIFI
   if (!value) throw new Error(`Missing required secret: ${name}`)
 }
 
-let oauth = null
+let session = null
 let latest = { ok: false, source: 'IG Demo', mode: 'DEMO', error: 'Starting', updatedAt: null }
 const listeners = new Set()
+
+function safeCode(body) {
+  return typeof body?.errorCode === 'string'
+    ? body.errorCode.replace(/[^A-Za-z0-9._-]/g, '')
+    : 'unknown'
+}
 
 async function login() {
   const res = await fetch(`${cfg.base}/session`, {
     method: 'POST',
-    headers: { 'X-IG-API-KEY': cfg.apiKey, Version: '3', 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ identifier: cfg.identifier, password: cfg.password }),
+    headers: {
+      'X-IG-API-KEY': cfg.apiKey,
+      Version: '2',
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      identifier: cfg.identifier,
+      password: cfg.password,
+      encryptedPassword: false,
+    }),
   })
   const body = await res.json().catch(() => ({}))
-  if (!res.ok || !body?.oauthToken?.access_token) {
-    const code = typeof body?.errorCode === 'string' ? body.errorCode.replace(/[^A-Za-z0-9._-]/g, '') : 'unknown'
-    throw new Error(`IG login failed (${res.status}; ${code})`)
+  const cst = res.headers.get('cst')
+  const securityToken = res.headers.get('x-security-token')
+
+  if (!res.ok || !cst || !securityToken) {
+    throw new Error(`IG login failed (${res.status}; ${safeCode(body)})`)
   }
-  oauth = { token: body.oauthToken.access_token, type: body.oauthToken.token_type || 'Bearer', expiresAt: Date.now() + (Number(body.oauthToken.expires_in || 60) - 10) * 1000 }
+
+  session = { cst, securityToken }
+}
+
+function requestHeaders() {
+  return {
+    'X-IG-API-KEY': cfg.apiKey,
+    CST: session.cst,
+    'X-SECURITY-TOKEN': session.securityToken,
+    Version: '3',
+    Accept: 'application/json',
+  }
 }
 
 async function igFetch(path) {
-  if (!oauth || Date.now() >= oauth.expiresAt) await login()
-  let res = await fetch(`${cfg.base}${path}`, { headers: { 'X-IG-API-KEY': cfg.apiKey, Version: '3', Authorization: `${oauth.type} ${oauth.token}`, Accept: 'application/json' } })
-  if (res.status === 401) { oauth = null; await login(); res = await fetch(`${cfg.base}${path}`, { headers: { 'X-IG-API-KEY': cfg.apiKey, Version: '3', Authorization: `${oauth.type} ${oauth.token}`, Accept: 'application/json' } }) }
+  if (!session) await login()
+
+  let res = await fetch(`${cfg.base}${path}`, { headers: requestHeaders() })
+  if (res.status === 401) {
+    session = null
+    await login()
+    res = await fetch(`${cfg.base}${path}`, { headers: requestHeaders() })
+  }
+
   const body = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(`IG request failed (${res.status})`)
+  if (!res.ok) throw new Error(`IG request failed (${res.status}; ${safeCode(body)})`)
   return body
 }
 
