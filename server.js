@@ -6,75 +6,116 @@ const cfg = {
   apiKey: process.env.IG_API_KEY,
   identifier: process.env.IG_IDENTIFIER,
   password: process.env.IG_PASSWORD,
-  epic: process.env.IG_GOLD_EPIC || 'CS.D.CFEGOLD.CFE.IP',
+  goldEpic: process.env.IG_GOLD_EPIC || 'CS.D.CFEGOLD.CFE.IP',
   pollMs: Math.max(2000, Number(process.env.POLL_INTERVAL_MS || 5000)),
   port: Number(process.env.PORT || 3000),
-  origin: process.env.ALLOWED_ORIGIN || 'https://goldagent.retool.com',
+  origin: process.env.ALLOWED_ORIGIN || '*',
 }
 
 for (const [name, value] of Object.entries({ IG_API_KEY: cfg.apiKey, IG_IDENTIFIER: cfg.identifier, IG_PASSWORD: cfg.password })) {
   if (!value) throw new Error(`Missing required secret: ${name}`)
 }
 
+const instruments = {
+  XAUUSD: { label: '🥇 XAUUSD — Gold', search: 'Gold', epic: cfg.goldEpic },
+  XAGUSD: { label: '🥈 XAGUSD — Silver', search: 'Silver' },
+  BTCUSD: { label: '₿ BTCUSD — Bitcoin', search: 'Bitcoin', epic: 'CS.D.BITCOIN.CFD.IP' },
+  ETHUSD: { label: 'Ξ ETHUSD — Ethereum', search: 'Ether' },
+  SOLUSD: { label: '◎ SOLUSD — Solana', search: 'Solana' },
+  XRPUSD: { label: '✕ XRPUSD — XRP', search: 'Ripple' },
+  WTI: { label: '🛢️ WTI — US Oil', search: 'US Crude' },
+  BRENT: { label: '🛢️ BRENT — Brent Oil', search: 'Brent Crude' },
+  COPPER: { label: '🟠 COPPER — Copper', search: 'Copper' },
+  EURUSD: { label: '💶 EURUSD', search: 'EUR/USD' },
+  GBPUSD: { label: '💷 GBPUSD', search: 'GBP/USD' },
+  USDJPY: { label: '💴 USDJPY', search: 'USD/JPY' },
+}
+
 let session = null
 let latest = { ok: false, source: 'IG Demo', mode: 'DEMO', error: 'Starting', updatedAt: null }
 const listeners = new Set()
+const resolvedEpics = new Map()
 
 function safeCode(body) {
-  return typeof body?.errorCode === 'string'
-    ? body.errorCode.replace(/[^A-Za-z0-9._-]/g, '')
-    : 'unknown'
+  return typeof body?.errorCode === 'string' ? body.errorCode.replace(/[^A-Za-z0-9._-]/g, '') : 'unknown'
 }
 
 async function login() {
   const res = await fetch(`${cfg.base}/session`, {
     method: 'POST',
-    headers: {
-      'X-IG-API-KEY': cfg.apiKey,
-      Version: '2',
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({
-      identifier: cfg.identifier,
-      password: cfg.password,
-      encryptedPassword: false,
-    }),
+    headers: { 'X-IG-API-KEY': cfg.apiKey, Version: '2', 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ identifier: cfg.identifier, password: cfg.password, encryptedPassword: false }),
   })
   const body = await res.json().catch(() => ({}))
   const cst = res.headers.get('cst')
   const securityToken = res.headers.get('x-security-token')
-
-  if (!res.ok || !cst || !securityToken) {
-    throw new Error(`IG login failed (${res.status}; ${safeCode(body)})`)
-  }
-
+  if (!res.ok || !cst || !securityToken) throw new Error(`IG login failed (${res.status}; ${safeCode(body)})`)
   session = { cst, securityToken }
 }
 
-function requestHeaders() {
-  return {
-    'X-IG-API-KEY': cfg.apiKey,
-    CST: session.cst,
-    'X-SECURITY-TOKEN': session.securityToken,
-    Version: '3',
-    Accept: 'application/json',
-  }
+function requestHeaders(version = '3') {
+  return { 'X-IG-API-KEY': cfg.apiKey, CST: session.cst, 'X-SECURITY-TOKEN': session.securityToken, Version: version, Accept: 'application/json' }
 }
 
-async function igFetch(path) {
+async function igFetch(path, version = '3') {
   if (!session) await login()
-
-  let res = await fetch(`${cfg.base}${path}`, { headers: requestHeaders() })
+  let res = await fetch(`${cfg.base}${path}`, { headers: requestHeaders(version) })
   if (res.status === 401) {
     session = null
     await login()
-    res = await fetch(`${cfg.base}${path}`, { headers: requestHeaders() })
+    res = await fetch(`${cfg.base}${path}`, { headers: requestHeaders(version) })
   }
-
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(`IG request failed (${res.status}; ${safeCode(body)})`)
   return body
+}
+
+function cleanSymbol(value) {
+  return String(value || '').toUpperCase().replace(/[^A-Z]/g, '')
+}
+
+async function resolveEpic(symbol) {
+  const key = cleanSymbol(symbol)
+  const spec = instruments[key]
+  if (!spec) throw new Error('Unsupported symbol')
+  if (resolvedEpics.has(key)) return resolvedEpics.get(key)
+  if (spec.epic) {
+    resolvedEpics.set(key, spec.epic)
+    return spec.epic
+  }
+  const result = await igFetch(`/markets?searchTerm=${encodeURIComponent(spec.search)}`, '1')
+  const markets = Array.isArray(result.markets) ? result.markets : []
+  const active = markets.find(m => m?.instrument?.epic && m?.snapshot?.marketStatus === 'TRADEABLE')
+  const first = active || markets.find(m => m?.instrument?.epic)
+  if (!first) throw new Error(`IG market not found for ${key}`)
+  resolvedEpics.set(key, first.instrument.epic)
+  return first.instrument.epic
+}
+
+function quoteFromSnapshot(symbol, epic, snapshot = {}) {
+  const bid = Number(snapshot.bid)
+  const offer = Number(snapshot.offer)
+  const price = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : Number.isFinite(bid) ? bid : offer
+  if (!Number.isFinite(price)) throw new Error('IG returned no valid price')
+  return {
+    ok: true,
+    symbol,
+    label: instruments[symbol].label,
+    epic,
+    bid,
+    offer,
+    price,
+    marketStatus: snapshot.marketStatus || 'UNKNOWN',
+    source: 'IG Demo',
+    mode: 'DEMO',
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+async function getQuote(symbol) {
+  const epic = await resolveEpic(symbol)
+  const body = await igFetch(`/markets/${encodeURIComponent(epic)}`, '3')
+  return quoteFromSnapshot(symbol, epic, body.snapshot || {})
 }
 
 function publish(value) {
@@ -85,31 +126,68 @@ function publish(value) {
 
 async function tick() {
   try {
-    const body = await igFetch(`/markets/${encodeURIComponent(cfg.epic)}`)
-    const s = body.snapshot || {}
-    const bid = Number(s.bid), offer = Number(s.offer)
-    const price = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : Number.isFinite(bid) ? bid : offer
-    if (!Number.isFinite(price)) throw new Error('IG returned no valid price')
-    publish({ ok: true, symbol: 'XAUUSD', epic: cfg.epic, bid, offer, price, marketStatus: s.marketStatus || 'UNKNOWN', source: 'IG Demo', mode: 'DEMO', updatedAt: new Date().toISOString() })
+    publish(await getQuote('XAUUSD'))
   } catch (error) {
-    publish({ ok: false, symbol: 'XAUUSD', source: 'IG Demo', mode: 'DEMO', error: error.message, updatedAt: new Date().toISOString() })
+    publish({ ok: false, symbol: 'XAUUSD', label: instruments.XAUUSD.label, source: 'IG Demo', mode: 'DEMO', error: error.message, updatedAt: new Date().toISOString() })
   }
 }
 
-app.use((req, res, next) => { res.setHeader('Access-Control-Allow-Origin', cfg.origin); res.setHeader('Vary', 'Origin'); next() })
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', cfg.origin)
+  res.setHeader('Vary', 'Origin')
+  res.setHeader('Cache-Control', 'no-store')
+  next()
+})
+
 app.get('/health', (_req, res) => res.json({
   ok: true,
   service: 'ig-demo-stream',
+  mode: 'DEMO',
+  instruments: Object.keys(instruments),
   latestOk: latest.ok,
   error: latest.ok ? null : (latest.error || 'Unknown IG Demo error'),
   updatedAt: latest.updatedAt,
 }))
+
 app.get('/snapshot', (_req, res) => res.status(latest.ok ? 200 : 503).json(latest))
+
+app.get('/quote/:symbol', async (req, res) => {
+  const symbol = cleanSymbol(req.params.symbol)
+  try {
+    const quote = await getQuote(symbol)
+    res.json(quote)
+  } catch (error) {
+    res.status(error.message === 'Unsupported symbol' ? 404 : 503).json({ ok: false, symbol, source: 'IG Demo', mode: 'DEMO', error: error.message, updatedAt: new Date().toISOString() })
+  }
+})
+
+app.get('/prices/:symbol', async (req, res) => {
+  const symbol = cleanSymbol(req.params.symbol)
+  const allowedResolutions = new Set(['MINUTE', 'MINUTE_2', 'MINUTE_3', 'MINUTE_5', 'MINUTE_10', 'MINUTE_15', 'MINUTE_30', 'HOUR', 'HOUR_2', 'HOUR_3', 'HOUR_4', 'DAY', 'WEEK', 'MONTH'])
+  const resolution = allowedResolutions.has(String(req.query.resolution || '').toUpperCase()) ? String(req.query.resolution).toUpperCase() : 'MINUTE_5'
+  const max = Math.min(500, Math.max(10, Number(req.query.max || 100)))
+  try {
+    const epic = await resolveEpic(symbol)
+    const body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}`, '3')
+    res.json({ ok: true, symbol, label: instruments[symbol].label, epic, resolution, source: 'IG Demo', mode: 'DEMO', ...body })
+  } catch (error) {
+    res.status(error.message === 'Unsupported symbol' ? 404 : 503).json({ ok: false, symbol, source: 'IG Demo', mode: 'DEMO', error: error.message, updatedAt: new Date().toISOString() })
+  }
+})
+
 app.get('/events', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders()
-  listeners.add(res); res.write(`data: ${JSON.stringify(latest)}\n\n`)
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+  listeners.add(res)
+  res.write(`data: ${JSON.stringify(latest)}\n\n`)
   const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15000)
   req.on('close', () => { clearInterval(heartbeat); listeners.delete(res) })
 })
 
-app.listen(cfg.port, () => { console.log(`IG Demo read-only stream listening on ${cfg.port}`); tick(); setInterval(tick, cfg.pollMs) })
+app.listen(cfg.port, () => {
+  console.log(`IG Demo multi-market service listening on ${cfg.port}`)
+  tick()
+  setInterval(tick, cfg.pollMs)
+})
