@@ -196,12 +196,12 @@ app.get('/prices/:symbol', async (req, res) => {
     let epic = await resolveEpic(symbol)
     let body
     try {
-      body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}`, '3')
+      body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}&pageSize=0`, '3')
     } catch (error) {
       if (!String(error.message).includes('epic.unavailable')) throw error
       resolvedEpics.delete(symbol)
       epic = await resolveEpic(symbol, true)
-      body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}`, '3')
+      body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}&pageSize=0`, '3')
     }
     const rows = (Array.isArray(body.prices) ? body.prices : []).map(p => {
       const mid = pair => {
