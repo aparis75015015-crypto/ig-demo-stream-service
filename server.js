@@ -18,17 +18,17 @@ for (const [name, value] of Object.entries({ IG_API_KEY: cfg.apiKey, IG_IDENTIFI
 
 const instruments = {
   XAUUSD: { label: '🥇 XAUUSD — Gold', search: 'Gold', epic: cfg.goldEpic },
-  XAGUSD: { label: '🥈 XAGUSD — Silver', search: 'Silver' },
+  XAGUSD: { label: '🥈 XAGUSD — Silver', search: 'Silver', epic: 'CS.D.CFESILVER.CFE.IP' },
   BTCUSD: { label: '₿ BTCUSD — Bitcoin', search: 'Bitcoin', epic: 'CS.D.BITCOIN.CFD.IP' },
-  ETHUSD: { label: 'Ξ ETHUSD — Ethereum', search: 'Ether' },
-  SOLUSD: { label: '◎ SOLUSD — Solana', search: 'Solana' },
-  XRPUSD: { label: '✕ XRPUSD — XRP', search: 'Ripple' },
-  WTI: { label: '🛢️ WTI — US Oil', search: 'US Crude' },
-  BRENT: { label: '🛢️ BRENT — Brent Oil', search: 'Brent Crude' },
-  COPPER: { label: '🟠 COPPER — Copper', search: 'Copper' },
-  EURUSD: { label: '💶 EURUSD', search: 'EUR/USD' },
-  GBPUSD: { label: '💷 GBPUSD', search: 'GBP/USD' },
-  USDJPY: { label: '💴 USDJPY', search: 'USD/JPY' },
+  ETHUSD: { label: 'Ξ ETHUSD — Ethereum', search: 'Ether', epic: 'CS.D.ETHUSD.CFD.IP' },
+  SOLUSD: { label: '◎ SOLUSD — Solana', search: 'Solana', epic: 'CS.D.SOLUSD.CFD.IP' },
+  XRPUSD: { label: '✕ XRPUSD — XRP', search: 'Ripple', epic: 'CS.D.XRPUSD.CFD.IP' },
+  WTI: { label: '🛢️ WTI — US Oil', search: 'US Crude', epic: 'CC.D.CL.USS.IP' },
+  BRENT: { label: '🛢️ BRENT — Brent Oil', search: 'Brent Crude', epic: 'CC.D.LCO.USS.IP' },
+  COPPER: { label: '🟠 COPPER — Copper', search: 'Copper', epic: 'CS.D.CFECOPPER.CFE.IP' },
+  EURUSD: { label: '💶 EURUSD', search: 'EUR/USD', epic: 'CS.D.EURUSD.CFD.IP' },
+  GBPUSD: { label: '💷 GBPUSD', search: 'GBP/USD', epic: 'CS.D.GBPUSD.CFD.IP' },
+  USDJPY: { label: '💴 USDJPY', search: 'USD/JPY', epic: 'CS.D.USDJPY.CFD.IP' },
 }
 
 let session = null
