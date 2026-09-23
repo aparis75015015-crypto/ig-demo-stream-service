@@ -18,7 +18,7 @@ for (const [name, value] of Object.entries({ IG_API_KEY: cfg.apiKey, IG_IDENTIFI
 
 const instruments = {
   XAUUSD: { label: '🥇 XAUUSD — Gold', search: 'Gold', epic: cfg.goldEpic },
-  XAGUSD: { label: '🥈 XAGUSD — Silver', search: ['Silver', 'Spot Silver', 'XAG'], epic: 'CS.D.CFESILVER.CFE.IP' },
+  XAGUSD: { label: '🥈 XAGUSD — Silver', search: ['Silver', 'Spot Silver', 'XAG'], epic: 'CS.D.USCSI.TODAY.IP' },
   BTCUSD: { label: '₿ BTCUSD — Bitcoin', search: 'Bitcoin', epic: 'CS.D.BITCOIN.CFD.IP' },
   ETHUSD: { label: 'Ξ ETHUSD — Ethereum', search: ['Ether', 'Ethereum', 'ETH'], epic: 'CS.D.ETHUSD.CFD.IP' },
   SOLUSD: { label: '◎ SOLUSD — Solana', search: ['Solana', 'SOL'], epic: 'CS.D.SOLUSD.CFD.IP' },
