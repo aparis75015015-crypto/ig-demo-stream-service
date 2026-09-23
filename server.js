@@ -97,18 +97,31 @@ function quoteFromSnapshot(symbol, epic, snapshot = {}) {
   const offer = Number(snapshot.offer)
   const price = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : Number.isFinite(bid) ? bid : offer
   if (!Number.isFinite(price)) throw new Error('IG returned no valid price')
+  const change = Number(snapshot.netChange)
+  const previousClose = Number.isFinite(change) ? price - change : price
+  const now = Math.floor(Date.now() / 1000)
   return {
     ok: true,
     symbol,
+    name: instruments[symbol].label,
     label: instruments[symbol].label,
     epic,
     bid,
+    ask: offer,
     offer,
     price,
+    close: price,
+    previous_close: previousClose,
+    change: Number.isFinite(change) ? change : 0,
+    percent_change: Number(snapshot.percentageChange) || 0,
+    timestamp: now,
+    datetime: new Date(now * 1000).toISOString(),
+    is_market_open: snapshot.marketStatus === 'TRADEABLE',
     marketStatus: snapshot.marketStatus || 'UNKNOWN',
     source: 'IG Demo',
     mode: 'DEMO',
     updatedAt: new Date().toISOString(),
+    chart: { result: [{ meta: { symbol, regularMarketPrice: price, previousClose, chartPreviousClose: previousClose, exchangeName: 'IG Demo' }, timestamp: [now], indicators: { quote: [{ open: [price], high: [price], low: [price], close: [price] }] } }], error: null },
   }
 }
 
@@ -169,7 +182,19 @@ app.get('/prices/:symbol', async (req, res) => {
   try {
     const epic = await resolveEpic(symbol)
     const body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}`, '3')
-    res.json({ ok: true, symbol, label: instruments[symbol].label, epic, resolution, source: 'IG Demo', mode: 'DEMO', ...body })
+    const rows = (Array.isArray(body.prices) ? body.prices : []).map(p => {
+      const mid = pair => {
+        const bid = Number(pair?.bid), ask = Number(pair?.ask)
+        return Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : Number.isFinite(bid) ? bid : ask
+      }
+      const iso = p.snapshotTimeUTC || p.snapshotTime
+      const timestamp = Math.floor(new Date(iso).getTime() / 1000)
+      return { datetime: iso, timestamp, open: mid(p.openPrice), high: mid(p.highPrice), low: mid(p.lowPrice), close: mid(p.closePrice), volume: Number(p.lastTradedVolume) || 0 }
+    }).filter(r => Number.isFinite(r.timestamp) && Number.isFinite(r.close))
+    const timestamp = rows.map(r => r.timestamp)
+    const q = { open: rows.map(r => r.open), high: rows.map(r => r.high), low: rows.map(r => r.low), close: rows.map(r => r.close), volume: rows.map(r => r.volume) }
+    const last = rows.at(-1)?.close
+    res.json({ ok: true, symbol, label: instruments[symbol].label, epic, resolution, source: 'IG Demo', mode: 'DEMO', values: rows.slice().reverse(), prices: body.prices || [], metadata: body.metadata || {}, chart: { result: [{ meta: { symbol, regularMarketPrice: last, exchangeName: 'IG Demo' }, timestamp, indicators: { quote: [q] } }], error: null } })
   } catch (error) {
     res.status(error.message === 'Unsupported symbol' ? 404 : 503).json({ ok: false, symbol, source: 'IG Demo', mode: 'DEMO', error: error.message, updatedAt: new Date().toISOString() })
   }
