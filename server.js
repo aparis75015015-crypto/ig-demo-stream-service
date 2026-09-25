@@ -340,3 +340,13 @@ app.post('/ig/demo/bitcoin-order',auth,async(req,res)=>{
  }catch(e){res.status(503).json({mode:'IG_DEMO_ONLY',errorCode:'bitcoin-order-failed',message:e.message});}
 });
 
+
+app.get('/ig/demo/confirm/:dealReference',auth,async(req,res)=>{
+ try{
+  const s=await igSession();
+  const r=await fetch(`${cfg.base}/confirms/${encodeURIComponent(req.params.dealReference)}`,{headers:igHeaders(s,'1')});
+  const b=await r.json().catch(()=>({}));
+  res.status(r.status).json({mode:'IG_DEMO_ONLY',...b});
+ }catch(e){res.status(503).json({mode:'IG_DEMO_ONLY',errorCode:'bitcoin-confirm-failed',message:e.message});}
+});
+
