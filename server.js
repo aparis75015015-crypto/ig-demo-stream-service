@@ -26,6 +26,7 @@ const frames = ['1m', '5m', '15m', '30m', '1h', '4h'];
 const state = {
   mode: 'IG_DEMO_ONLY', source: 'IG_LIGHTSTREAMER', status: 'STARTING',
   connected: false, lastTickAt: null, lastCandleAt: null, lastError: null,
+  bootstrapErrors: [],
   reconnects: 0, sessionStartedAt: null, marketStatus: 'UNKNOWN',
   quote: null, candles: Object.fromEntries(frames.map(f => [f, []])),
 };
@@ -179,7 +180,9 @@ async function bootstrapFromIg(s) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(body.prices)) {
-        state.lastError = `IG bootstrap ${frame}: ${body.errorCode || res.status}`;
+        const message = `IG bootstrap ${frame}: ${body.errorCode || res.status}`;
+        state.bootstrapErrors.push(message);
+        state.lastError = message;
         continue;
       }
       for (const row of body.prices) {
@@ -191,7 +194,9 @@ async function bootstrapFromIg(s) {
         });
       }
     } catch (e) {
-      state.lastError = `IG bootstrap ${frame}: ${e.message}`;
+      const message = `IG bootstrap ${frame}: ${e.message}`;
+      state.bootstrapErrors.push(message);
+      state.lastError = message;
     }
   }
   await persist().catch(e => { state.lastError = `persist: ${e.message}`; });
@@ -237,7 +242,7 @@ function quality() {
 const app = express();
 app.get('/health', (_req, res) => {
   const q = quality();
-  res.status(q.ok ? 200 : 503).json({ service: 'gold-ig-demo-stream', mode: state.mode, ...q, status: state.status, lastError: state.lastError, reconnects: state.reconnects });
+  res.status(q.ok ? 200 : 503).json({ service: 'gold-ig-demo-stream', mode: state.mode, ...q, status: state.status, lastError: state.lastError, bootstrapErrors: state.bootstrapErrors, reconnects: state.reconnects });
 });
 app.get('/bundle', (_req, res) => {
   const q = quality();
