@@ -1,239 +1,214 @@
-import express from 'express'
+import express from 'express';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { LightstreamerClient, Subscription } from 'lightstreamer-client-node';
 
-const app = express()
 const cfg = {
-  base: process.env.IG_API_BASE || 'https://demo-api.ig.com/gateway/deal',
+  base: 'https://demo-api.ig.com/gateway/deal',
   apiKey: process.env.IG_API_KEY,
   identifier: process.env.IG_IDENTIFIER,
   password: process.env.IG_PASSWORD,
-  goldEpic: process.env.IG_GOLD_EPIC || 'CS.D.CFEGOLD.CFE.IP',
-  pollMs: Math.max(60000, Number(process.env.POLL_INTERVAL_MS || 60000)),
+  epic: process.env.IG_GOLD_EPIC || 'CS.D.CFEGOLD.CFE.IP',
   port: Number(process.env.PORT || 3000),
-  origin: process.env.ALLOWED_ORIGIN || '*',
+  cacheFile: process.env.CACHE_FILE || '/data/gold-candles.json',
+  maxQuoteAgeMs: Number(process.env.MAX_QUOTE_AGE_MS || 90_000),
+  bootstrapHistory: process.env.BOOTSTRAP_HISTORY === 'true',
+  twelveDataApiKey: process.env.TWELVE_DATA_API_KEY || '',
+};
+
+for (const [key, value] of Object.entries({
+  IG_API_KEY: cfg.apiKey,
+  IG_IDENTIFIER: cfg.identifier,
+  IG_PASSWORD: cfg.password,
+})) if (!value) throw new Error(`Missing required secret: ${key}`);
+
+const frames = ['1m', '5m', '15m', '30m', '1h', '4h'];
+const state = {
+  mode: 'IG_DEMO_ONLY', source: 'IG_LIGHTSTREAMER', status: 'STARTING',
+  connected: false, lastTickAt: null, lastCandleAt: null, lastError: null,
+  reconnects: 0, sessionStartedAt: null, marketStatus: 'UNKNOWN',
+  quote: null, candles: Object.fromEntries(frames.map(f => [f, []])),
+};
+let lsClient = null;
+let persistTimer = null;
+let session = null;
+
+const n = value => {
+  const x = Number(value);
+  return Number.isFinite(x) ? x : null;
+};
+const mid = (bid, ask) => n(bid) !== null && n(ask) !== null ? (n(bid) + n(ask)) / 2 : n(bid) ?? n(ask);
+
+function upsert(frame, candle) {
+  if (!candle?.time || !Number.isFinite(candle.open) || !Number.isFinite(candle.close)) return;
+  const rows = state.candles[frame];
+  const i = rows.findIndex(x => x.time === candle.time);
+  if (i >= 0) rows[i] = { ...rows[i], ...candle };
+  else rows.push(candle);
+  rows.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+  if (rows.length > 300) rows.splice(0, rows.length - 300);
+  state.lastCandleAt = new Date().toISOString();
+  schedulePersist();
 }
 
-for (const [name, value] of Object.entries({ IG_API_KEY: cfg.apiKey, IG_IDENTIFIER: cfg.identifier, IG_PASSWORD: cfg.password })) {
-  if (!value) throw new Error(`Missing required secret: ${name}`)
+function bucketStart(iso, minutes) {
+  const d = new Date(iso);
+  const ms = minutes * 60_000;
+  return new Date(Math.floor(d.getTime() / ms) * ms).toISOString();
 }
 
-const instruments = {
-  XAUUSD: { label: '🥇 XAUUSD — Gold', search: 'Gold', epic: cfg.goldEpic },
-  XAGUSD: { label: '🥈 XAGUSD — Silver', search: ['Silver', 'Spot Silver', 'XAG'], epic: 'CS.D.USCSI.TODAY.IP' },
-  BTCUSD: { label: '₿ BTCUSD — Bitcoin', search: 'Bitcoin', epic: 'CS.D.BITCOIN.CFD.IP' },
-  ETHUSD: { label: 'Ξ ETHUSD — Ethereum', search: ['Ether', 'Ethereum', 'ETH'], epic: 'CS.D.ETHUSD.CFD.IP' },
-  SOLUSD: { label: '◎ SOLUSD — Solana', search: ['Solana', 'SOL'], epic: 'CS.D.SOLUSD.CFD.IP' },
-  XRPUSD: { label: '✕ XRPUSD — XRP', search: ['Ripple', 'XRP'], epic: 'CS.D.XRPUSD.CFD.IP' },
-  WTI: { label: '🛢️ WTI — US Oil', search: 'US Crude', epic: 'CC.D.CL.USS.IP' },
-  BRENT: { label: '🛢️ BRENT — Brent Oil', search: 'Brent Crude', epic: 'CC.D.LCO.USS.IP' },
-  COPPER: { label: '🟠 COPPER — Copper', search: 'Copper', epic: 'CS.D.CFECOPPER.CFE.IP' },
-  EURUSD: { label: '💶 EURUSD', search: 'EUR/USD', epic: 'CS.D.EURUSD.CFD.IP' },
-  GBPUSD: { label: '💷 GBPUSD', search: 'GBP/USD', epic: 'CS.D.GBPUSD.CFD.IP' },
-  USDJPY: { label: '💴 USDJPY', search: 'USD/JPY', epic: 'CS.D.USDJPY.CFD.IP' },
+function aggregate(sourceFrame, targetFrame, minutes) {
+  const source = state.candles[sourceFrame];
+  const groups = new Map();
+  for (const c of source) {
+    const key = bucketStart(c.time, minutes);
+    const g = groups.get(key) || [];
+    g.push(c); groups.set(key, g);
+  }
+  for (const [time, group] of groups) {
+    group.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    upsert(targetFrame, {
+      time, open: group[0].open, high: Math.max(...group.map(x => x.high)),
+      low: Math.min(...group.map(x => x.low)), close: group.at(-1).close,
+      complete: group.at(-1).complete === true, source: 'IG_LIGHTSTREAMER_AGGREGATED',
+    });
+  }
 }
 
-let session = null
-let latest = { ok: false, source: 'IG Demo', mode: 'DEMO', error: 'Starting', updatedAt: null }
-const listeners = new Set()
-const resolvedEpics = new Map()
+function onCandle(scale, frame, update) {
+  const value = name => update.getValue(name);
+  const timeMs = n(value('UTM'));
+  const candle = {
+    time: new Date(timeMs ?? Date.now()).toISOString(),
+    open: mid(value('BID_OPEN'), value('OFR_OPEN')),
+    high: mid(value('BID_HIGH'), value('OFR_HIGH')),
+    low: mid(value('BID_LOW'), value('OFR_LOW')),
+    close: mid(value('BID_CLOSE'), value('OFR_CLOSE')),
+    complete: value('CONS_END') === '1', source: 'IG_LIGHTSTREAMER', scale,
+  };
+  upsert(frame, candle);
+  state.lastTickAt = candle.time;
+  state.quote = {
+    symbol: 'XAUUSD', epic: cfg.epic, price: candle.close,
+    bid: n(value('BID_CLOSE')), offer: n(value('OFR_CLOSE')),
+    updatedAt: candle.time, source: 'IG_LIGHTSTREAMER', mode: 'DEMO',
+  };
+  state.lastError = null;
+  if (frame === '5m') { aggregate('5m', '15m', 15); aggregate('5m', '30m', 30); }
+  if (frame === '1h') aggregate('1h', '4h', 240);
+}
 
-function safeCode(body) {
-  return typeof body?.errorCode === 'string' ? body.errorCode.replace(/[^A-Za-z0-9._-]/g, '') : 'unknown'
+async function persist() {
+  const dir = dirname(cfg.cacheFile);
+  await mkdir(dir, { recursive: true });
+  const tmp = `${cfg.cacheFile}.tmp`;
+  await writeFile(tmp, JSON.stringify({ candles: state.candles, savedAt: new Date().toISOString() }), { mode: 0o600 });
+  await rename(tmp, cfg.cacheFile);
+}
+function schedulePersist() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => persist().catch(e => { state.lastError = `persist: ${e.message}`; }), 1000);
+}
+async function restore() {
+  try {
+    const saved = JSON.parse(await readFile(cfg.cacheFile, 'utf8'));
+    for (const f of frames) if (Array.isArray(saved?.candles?.[f])) state.candles[f] = saved.candles[f].slice(-300);
+  } catch (e) {
+    if (e.code !== 'ENOENT') state.lastError = `restore: ${e.message}`;
+  }
+}
+
+async function bootstrapFromTwelveData() {
+  if (!cfg.twelveDataApiKey) return;
+  const intervals = { '1m': '1min', '5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h', '4h': '4h' };
+  for (const [frame, interval] of Object.entries(intervals)) {
+    if (state.candles[frame].length >= 50) continue;
+    const qs = new URLSearchParams({ symbol: 'XAU/USD', interval, outputsize: '100', order: 'asc', apikey: cfg.twelveDataApiKey });
+    const res = await fetch(`https://api.twelvedata.com/time_series?${qs}`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !Array.isArray(body.values)) {
+      state.lastError = `Twelve Data bootstrap ${frame}: ${body.message || res.status}`;
+      continue;
+    }
+    for (const row of body.values) upsert(frame, {
+      time: new Date(`${row.datetime.replace(' ', 'T')}Z`).toISOString(),
+      open: n(row.open), high: n(row.high), low: n(row.low), close: n(row.close),
+      complete: true, source: 'TWELVE_DATA_BOOTSTRAP',
+    });
+    await new Promise(resolve => setTimeout(resolve, 900));
+  }
+  await persist();
 }
 
 async function login() {
   const res = await fetch(`${cfg.base}/session`, {
     method: 'POST',
     headers: { 'X-IG-API-KEY': cfg.apiKey, Version: '2', 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ identifier: cfg.identifier, password: cfg.password, encryptedPassword: false }),
-  })
-  const body = await res.json().catch(() => ({}))
-  const cst = res.headers.get('cst')
-  const securityToken = res.headers.get('x-security-token')
-  if (!res.ok || !cst || !securityToken) throw new Error(`IG login failed (${res.status}; ${safeCode(body)})`)
-  session = { cst, securityToken }
-}
-
-function requestHeaders(version = '3') {
-  return { 'X-IG-API-KEY': cfg.apiKey, CST: session.cst, 'X-SECURITY-TOKEN': session.securityToken, Version: version, Accept: 'application/json' }
-}
-
-async function igFetch(path, version = '3') {
-  if (!session) await login()
-  let res = await fetch(`${cfg.base}${path}`, { headers: requestHeaders(version) })
-  if (res.status === 401) {
-    session = null
-    await login()
-    res = await fetch(`${cfg.base}${path}`, { headers: requestHeaders(version) })
+    body: JSON.stringify({ identifier: cfg.identifier, password: cfg.password }),
+  });
+  const body = await res.json().catch(() => ({}));
+  const cst = res.headers.get('cst');
+  const xst = res.headers.get('x-security-token');
+  if (!res.ok || !cst || !xst || !body.lightstreamerEndpoint) {
+    throw new Error(`IG session failed (${res.status}): ${body.errorCode || 'missing streaming credentials'}`);
   }
-  const body = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(`IG request failed (${res.status}; ${safeCode(body)})`)
-  return body
+  session = { cst, xst, endpoint: body.lightstreamerEndpoint, accountId: body.currentAccountId, startedAt: Date.now() };
+  state.sessionStartedAt = new Date().toISOString();
+  return session;
 }
 
-function cleanSymbol(value) {
-  return String(value || '').toUpperCase().replace(/[^A-Z]/g, '')
+function subscribeChart(scale, frame) {
+  const fields = ['UTM','BID_OPEN','BID_HIGH','BID_LOW','BID_CLOSE','OFR_OPEN','OFR_HIGH','OFR_LOW','OFR_CLOSE','CONS_END'];
+  const sub = new Subscription('MERGE', [`CHART:${cfg.epic}:${scale}`], fields);
+  sub.addListener({
+    onItemUpdate: update => onCandle(scale, frame, update),
+    onSubscriptionError: (code, message) => { state.lastError = `subscription ${scale}: ${code} ${message}`; },
+  });
+  lsClient.subscribe(sub);
 }
 
-async function resolveEpic(symbol, forceSearch = false) {
-  const key = cleanSymbol(symbol)
-  const spec = instruments[key]
-  if (!spec) throw new Error('Unsupported symbol')
-  if (!forceSearch && resolvedEpics.has(key)) return resolvedEpics.get(key)
-  if (!forceSearch && spec.epic) {
-    resolvedEpics.set(key, spec.epic)
-    return spec.epic
-  }
-  const terms = Array.isArray(spec.search) ? spec.search : [spec.search]
-  for (const term of terms) {
-    const result = await igFetch(`/markets?searchTerm=${encodeURIComponent(term)}`, '1')
-    const markets = Array.isArray(result.markets) ? result.markets : []
-    const active = markets.find(m => m?.instrument?.epic && m?.snapshot?.marketStatus === 'TRADEABLE')
-    const first = active || markets.find(m => m?.instrument?.epic)
-    if (first) {
-      resolvedEpics.set(key, first.instrument.epic)
-      return first.instrument.epic
-    }
-  }
-  throw new Error(`IG market not found for ${key}`)
+async function connect() {
+  state.status = 'CONNECTING';
+  const s = await login();
+  if (lsClient) { try { lsClient.disconnect(); } catch {} }
+  lsClient = new LightstreamerClient(s.endpoint);
+  lsClient.connectionDetails.setUser(s.accountId);
+  lsClient.connectionDetails.setPassword(`CST-${s.cst}|XST-${s.xst}`);
+  lsClient.addListener({ onStatusChange: status => {
+    state.status = status;
+    state.connected = status.startsWith('CONNECTED:');
+    if (status.startsWith('DISCONNECTED')) state.reconnects += 1;
+  }});
+  lsClient.connect();
+  subscribeChart('1MINUTE', '1m');
+  subscribeChart('5MINUTE', '5m');
+  subscribeChart('HOUR', '1h');
 }
 
-function quoteFromSnapshot(symbol, epic, snapshot = {}) {
-  const bid = Number(snapshot.bid)
-  const offer = Number(snapshot.offer)
-  const price = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : Number.isFinite(bid) ? bid : offer
-  if (!Number.isFinite(price)) throw new Error('IG returned no valid price')
-  const change = Number(snapshot.netChange)
-  const previousClose = Number.isFinite(change) ? price - change : price
-  const now = Math.floor(Date.now() / 1000)
-  return {
-    ok: true,
-    symbol,
-    name: instruments[symbol].label,
-    label: instruments[symbol].label,
-    epic,
-    bid,
-    ask: offer,
-    offer,
-    price,
-    close: price,
-    previous_close: previousClose,
-    change: Number.isFinite(change) ? change : 0,
-    percent_change: Number(snapshot.percentageChange) || 0,
-    timestamp: now,
-    datetime: new Date(now * 1000).toISOString(),
-    is_market_open: snapshot.marketStatus === 'TRADEABLE',
-    marketStatus: snapshot.marketStatus || 'UNKNOWN',
-    source: 'IG Demo',
-    mode: 'DEMO',
-    updatedAt: new Date().toISOString(),
-    chart: { result: [{ meta: { symbol, regularMarketPrice: price, previousClose, chartPreviousClose: previousClose, exchangeName: 'IG Demo' }, timestamp: [now], indicators: { quote: [{ open: [price], high: [price], low: [price], close: [price] }] } }], error: null },
-  }
+function quality() {
+  const ageMs = state.lastTickAt ? Date.now() - Date.parse(state.lastTickAt) : Infinity;
+  const counts = Object.fromEntries(frames.map(f => [f, state.candles[f].length]));
+  const warm = frames.every(f => counts[f] >= 50);
+  const fresh = ageMs <= cfg.maxQuoteAgeMs;
+  return { ok: state.connected && fresh && warm, connected: state.connected, fresh, warm, ageMs, counts };
 }
 
-async function getQuote(symbol) {
-  let epic = await resolveEpic(symbol)
-  try {
-    const body = await igFetch(`/markets/${encodeURIComponent(epic)}`, '3')
-    return quoteFromSnapshot(symbol, epic, body.snapshot || {})
-  } catch (error) {
-    if (!String(error.message).includes('epic.unavailable')) throw error
-    resolvedEpics.delete(symbol)
-    epic = await resolveEpic(symbol, true)
-    const body = await igFetch(`/markets/${encodeURIComponent(epic)}`, '3')
-    return quoteFromSnapshot(symbol, epic, body.snapshot || {})
+const app = express();
+app.get('/health', (_req, res) => {
+  const q = quality();
+  res.status(q.ok ? 200 : 503).json({ service: 'gold-ig-demo-stream', mode: state.mode, ...q, status: state.status, lastError: state.lastError, reconnects: state.reconnects });
+});
+app.get('/bundle', (_req, res) => {
+  const q = quality();
+  res.status(q.ok ? 200 : 503).json({ data_valid: q.ok, source: state.source, mode: state.mode, quote: state.quote, marketStatus: state.marketStatus, candles: state.candles, quality: q });
+});
+
+await restore();
+await bootstrapFromTwelveData().catch(e => { state.lastError = `bootstrap: ${e.message}`; });
+connect().catch(e => { state.status = 'FAILED'; state.lastError = e.message; });
+setInterval(() => {
+  if (!session || Date.now() - session.startedAt > 5 * 60 * 60_000 || !state.connected) {
+    connect().catch(e => { state.status = 'FAILED'; state.lastError = e.message; });
   }
-}
-
-function publish(value) {
-  latest = value
-  const line = `data: ${JSON.stringify(value)}\n\n`
-  for (const res of listeners) res.write(line)
-}
-
-async function tick() {
-  try {
-    publish(await getQuote('XAUUSD'))
-  } catch (error) {
-    publish({ ok: false, symbol: 'XAUUSD', label: instruments.XAUUSD.label, source: 'IG Demo', mode: 'DEMO', error: error.message, updatedAt: new Date().toISOString() })
-  }
-}
-
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', cfg.origin)
-  res.setHeader('Vary', 'Origin')
-  res.setHeader('Cache-Control', 'no-store')
-  next()
-})
-
-app.get('/health', (_req, res) => res.json({
-  ok: true,
-  service: 'ig-demo-stream',
-  mode: 'DEMO',
-  instruments: Object.keys(instruments),
-  latestOk: latest.ok,
-  error: latest.ok ? null : (latest.error || 'Unknown IG Demo error'),
-  updatedAt: latest.updatedAt,
-}))
-
-app.get('/snapshot', (_req, res) => res.status(latest.ok ? 200 : 503).json(latest))
-
-app.get('/quote/:symbol', async (req, res) => {
-  const symbol = cleanSymbol(req.params.symbol)
-  try {
-    const quote = await getQuote(symbol)
-    res.json(quote)
-  } catch (error) {
-    res.status(error.message === 'Unsupported symbol' ? 404 : 503).json({ ok: false, symbol, source: 'IG Demo', mode: 'DEMO', error: error.message, updatedAt: new Date().toISOString() })
-  }
-})
-
-app.get('/prices/:symbol', async (req, res) => {
-  const symbol = cleanSymbol(req.params.symbol)
-  const allowedResolutions = new Set(['MINUTE', 'MINUTE_2', 'MINUTE_3', 'MINUTE_5', 'MINUTE_10', 'MINUTE_15', 'MINUTE_30', 'HOUR', 'HOUR_2', 'HOUR_3', 'HOUR_4', 'DAY', 'WEEK', 'MONTH'])
-  const resolution = allowedResolutions.has(String(req.query.resolution || '').toUpperCase()) ? String(req.query.resolution).toUpperCase() : 'MINUTE_5'
-  const max = Math.min(500, Math.max(10, Number(req.query.max || 100)))
-  try {
-    let epic = await resolveEpic(symbol)
-    let body
-    try {
-      body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}&pageSize=0`, '3')
-    } catch (error) {
-      if (!String(error.message).includes('epic.unavailable')) throw error
-      resolvedEpics.delete(symbol)
-      epic = await resolveEpic(symbol, true)
-      body = await igFetch(`/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}&pageSize=0`, '3')
-    }
-    const rows = (Array.isArray(body.prices) ? body.prices : []).map(p => {
-      const mid = pair => {
-        const bid = Number(pair?.bid), ask = Number(pair?.ask)
-        return Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : Number.isFinite(bid) ? bid : ask
-      }
-      const iso = p.snapshotTimeUTC || p.snapshotTime
-      const timestamp = Math.floor(new Date(iso).getTime() / 1000)
-      return { datetime: iso, timestamp, open: mid(p.openPrice), high: mid(p.highPrice), low: mid(p.lowPrice), close: mid(p.closePrice), volume: Number(p.lastTradedVolume) || 0 }
-    }).filter(r => Number.isFinite(r.timestamp) && Number.isFinite(r.close))
-    const timestamp = rows.map(r => r.timestamp)
-    const q = { open: rows.map(r => r.open), high: rows.map(r => r.high), low: rows.map(r => r.low), close: rows.map(r => r.close), volume: rows.map(r => r.volume) }
-    const last = rows.at(-1)?.close
-    res.json({ ok: true, symbol, label: instruments[symbol].label, epic, resolution, source: 'IG Demo', mode: 'DEMO', values: rows.slice().reverse(), prices: body.prices || [], metadata: body.metadata || {}, chart: { result: [{ meta: { symbol, regularMarketPrice: last, exchangeName: 'IG Demo' }, timestamp, indicators: { quote: [q] } }], error: null } })
-  } catch (error) {
-    res.status(error.message === 'Unsupported symbol' ? 404 : 503).json({ ok: false, symbol, source: 'IG Demo', mode: 'DEMO', error: error.message, updatedAt: new Date().toISOString() })
-  }
-})
-
-app.get('/events', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
-  res.flushHeaders()
-  listeners.add(res)
-  res.write(`data: ${JSON.stringify(latest)}\n\n`)
-  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15000)
-  req.on('close', () => { clearInterval(heartbeat); listeners.delete(res) })
-})
-
-app.listen(cfg.port, () => {
-  console.log(`IG Demo multi-market service listening on ${cfg.port}`)
-  tick()
-  setInterval(tick, cfg.pollMs)
-})
+}, 60_000).unref();
+app.listen(cfg.port, () => console.log(`gold IG Demo stream service listening on ${cfg.port}`));

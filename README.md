@@ -1,36 +1,20 @@
-# IG Demo Stream Service
+# Gold IG Demo Stream Service
 
-خدمة قراءة فقط تربط IG Demo بلوحة Retool دون تشغيل n8n كل عدة ثوانٍ. لا تحتوي أي مسار لإنشاء أو تعديل أو إغلاق الصفقات.
+خدمة أسعار مستقلة للذهب تستخدم IG Lightstreamer بدل استنزاف `/prices` التاريخي.
 
-## الوظائف
+## الضمانات
 
-- `GET /health` حالة الخدمة.
-- `GET /snapshot` آخر سعر محفوظ.
-- `GET /events` بث SSE للسعر كل 5 ثوانٍ افتراضيًا.
-- IG Demo فقط؛ العنوان الافتراضي مثبت على `demo-api.ig.com`.
+- IG Demo فقط.
+- لا تحتوي أي endpoint لإنشاء أو تعديل أو إغلاق صفقة.
+- ثلاثة اشتراكات بث فقط: 1m و5m و1h.
+- تجمع 15m و30m و4h محليًا.
+- تخزين ذري لآخر 300 شمعة من كل إطار.
+- إعادة اتصال وإعادة تسجيل دخول تلقائية.
+- `/bundle` يعيد `503` و`data_valid=false` إذا كانت البيانات قديمة أو غير مكتملة.
+- يمكن استخدام `TWELVE_DATA_API_KEY` لتمهيد 100 شمعة مرة واحدة فقط عندما تكون الذاكرة فارغة؛ بعد ذلك يصبح IG Streaming هو المصدر المستمر.
 
-## التشغيل
+## النشر
 
-1. انسخ `.env.example` إلى إعدادات الأسرار في منصة الاستضافة.
-2. أدخل `IG_API_KEY` و`IG_IDENTIFIER` و`IG_PASSWORD` كأسرار، ولا تضعها في الكود.
-3. شغّل `npm install` ثم `npm start`.
-4. اربط Retool بـ`/events` للسعر الحي، و`/snapshot` للتحميل الأولي.
+استخدم Docker مع قرص دائم مربوط إلى `/data`، ثم أضف أسرار `.env.example` إلى منصة الاستضافة.
 
-## الأمان
-
-- لا توجد endpoints للتداول.
-- لا تعاد رموز OAuth أو بيانات الدخول للعميل.
-- CORS مقيد افتراضيًا بـ`https://goldagent.retool.com`.
-- احتفظ بتنفيذ IG Demo في n8n خلف Safety Gate منفصل.
-
-## دمج Retool
-
-```ts
-const stream = new EventSource(`${PRICE_SERVICE_URL}/events`)
-stream.onmessage = (event) => {
-  const quote = JSON.parse(event.data)
-  if (quote.ok) setLivePrice(quote)
-}
-```
-
-المتغير `PRICE_SERVICE_URL` يجب أن يكون عنوان الخدمة المنشورة، وليس عنوان IG ولا مفتاحًا سريًا.
+بعد وصول 50 شمعة على الأقل لكل إطار تصبح `quality.ok=true`. لا يجب السماح لـn8n بالتداول قبل ذلك.
