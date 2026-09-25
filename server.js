@@ -350,3 +350,20 @@ app.get('/ig/demo/confirm/:dealReference',auth,async(req,res)=>{
  }catch(e){res.status(503).json({mode:'IG_DEMO_ONLY',errorCode:'bitcoin-confirm-failed',message:e.message});}
 });
 
+
+app.get('/ig/gold-market',auth,async(_req,res)=>{
+ try{const s=await igSession();const r=await fetch(`${cfg.base}/markets/${encodeURIComponent(cfg.epic)}`,{headers:igHeaders(s,'3')});const b=await r.json().catch(()=>({}));res.status(r.status).json({mode:'IG_DEMO_ONLY',...b});}
+ catch(e){res.status(503).json({mode:'IG_DEMO_ONLY',errorCode:'gold-market-unavailable',message:e.message});}
+});
+app.post('/ig/demo/gold-order',auth,async(req,res)=>{
+ try{
+  const direction=String(req.body?.direction||'').toUpperCase();const size=Number(req.body?.size??0.1);
+  if(!['BUY','SELL'].includes(direction))return res.status(400).json({errorCode:'invalid-direction'});
+  if(!Number.isFinite(size)||size<=0||size>0.1)return res.status(400).json({errorCode:'invalid-size',maxDemoSize:0.1});
+  const p={currencyCode:'EUR',direction,epic:cfg.epic,expiry:'-',forceOpen:true,guaranteedStop:false,orderType:'MARKET',size,trailingStop:false};
+  const sl=Number(req.body?.stopLevel),tp=Number(req.body?.limitLevel);if(Number.isFinite(sl))p.stopLevel=sl;if(Number.isFinite(tp))p.limitLevel=tp;
+  const s=await igSession();const r=await fetch(`${cfg.base}/positions/otc`,{method:'POST',headers:igHeaders(s,'2'),body:JSON.stringify(p)});
+  const b=await r.json().catch(()=>({}));res.status(r.status).json({mode:'IG_DEMO_ONLY',epic:cfg.epic,...b});
+ }catch(e){res.status(503).json({mode:'IG_DEMO_ONLY',errorCode:'gold-order-failed',message:e.message});}
+});
+
