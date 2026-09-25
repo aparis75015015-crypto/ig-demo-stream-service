@@ -1,4 +1,3 @@
-import express from 'express';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { LightstreamerClient, Subscription } from 'lightstreamer-client-node';
@@ -172,7 +171,8 @@ async function bootstrapFromIg(s) {
   for (const [frame, resolution] of Object.entries(resolutions)) {
     if (state.candles[frame].length >= 50) continue;
     try {
-      const res = await fetch(`${cfg.base}/prices/${encodeURIComponent(cfg.epic)}/${resolution}/50`, {
+      const qs = new URLSearchParams({ resolution, max: '50', pageSize: '0' });
+      const res = await fetch(`${cfg.base}/prices/${encodeURIComponent(cfg.epic)}?${qs}`, {
         headers: {
           'X-IG-API-KEY': cfg.apiKey, 'CST': s.cst,
           'X-SECURITY-TOKEN': s.xst, 'Version': '3', 'Accept': 'application/json',
