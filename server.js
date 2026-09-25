@@ -249,6 +249,32 @@ app.get('/bundle', (_req, res) => {
   const q = quality();
   res.status(q.ok ? 200 : 503).json({ data_valid: q.ok, source: state.source, mode: state.mode, quote: state.quote, marketStatus: state.marketStatus, candles: state.candles, quality: q });
 });
+app.get('/prices/:frame', (req, res) => {
+  const frame = req.params.frame;
+  if (!frames.includes(frame)) {
+    return res.status(404).json({ errorCode: 'invalid.frame', allowed: frames });
+  }
+  const q = quality();
+  const prices = state.candles[frame].map(candle => ({
+    snapshotTimeUTC: candle.time,
+    snapshotTime: candle.time.replace('T', ' ').replace('Z', ''),
+    openPrice: { bid: candle.open, ask: candle.open },
+    highPrice: { bid: candle.high, ask: candle.high },
+    lowPrice: { bid: candle.low, ask: candle.low },
+    closePrice: { bid: candle.close, ask: candle.close },
+    lastTradedVolume: null,
+    complete: candle.complete === true,
+    source: candle.source,
+  }));
+  res.status(q.ok ? 200 : 503).json({
+    prices,
+    data_valid: q.ok,
+    source: state.source,
+    mode: state.mode,
+    frame,
+    quality: q,
+  });
+});
 
 await restore();
 await bootstrapFromTwelveData().catch(e => { state.lastError = `bootstrap: ${e.message}`; });
