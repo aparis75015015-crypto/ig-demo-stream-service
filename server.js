@@ -32,6 +32,7 @@ const state = {
 let lsClient = null;
 let persistTimer = null;
 let session = null;
+let igBootstrapAttempted = false;
 
 const n = value => {
   const x = Number(value);
@@ -87,11 +88,14 @@ function onCandle(scale, frame, update) {
     complete: value('CONS_END') === '1', source: 'IG_LIGHTSTREAMER', scale,
   };
   upsert(frame, candle);
-  state.lastTickAt = candle.time;
+  // UTM is the candle bucket timestamp, not the time the stream update arrived.
+  // Using it for freshness makes a healthy hourly stream look ~60 minutes stale.
+  state.lastTickAt = new Date().toISOString();
   state.quote = {
     symbol: 'XAUUSD', epic: cfg.epic, price: candle.close,
     bid: n(value('BID_CLOSE')), offer: n(value('OFR_CLOSE')),
-    updatedAt: candle.time, source: 'IG_LIGHTSTREAMER', mode: 'DEMO',
+    updatedAt: state.lastTickAt, candleAt: candle.time,
+    source: 'IG_LIGHTSTREAMER', mode: 'DEMO',
   };
   state.lastError = null;
   if (frame === '5m') { aggregate('5m', '15m', 15); aggregate('5m', '30m', 30); }
@@ -157,6 +161,42 @@ async function login() {
   return session;
 }
 
+async function bootstrapFromIg(s) {
+  if (igBootstrapAttempted) return;
+  igBootstrapAttempted = true;
+  const resolutions = {
+    '1m': 'MINUTE', '5m': 'MINUTE_5', '15m': 'MINUTE_15',
+    '30m': 'MINUTE_30', '1h': 'HOUR', '4h': 'HOUR_4',
+  };
+  for (const [frame, resolution] of Object.entries(resolutions)) {
+    if (state.candles[frame].length >= 50) continue;
+    try {
+      const res = await fetch(`${cfg.base}/prices/${encodeURIComponent(cfg.epic)}/${resolution}/50`, {
+        headers: {
+          'X-IG-API-KEY': cfg.apiKey, 'CST': s.cst,
+          'X-SECURITY-TOKEN': s.xst, 'Version': '3', 'Accept': 'application/json',
+        },
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(body.prices)) {
+        state.lastError = `IG bootstrap ${frame}: ${body.errorCode || res.status}`;
+        continue;
+      }
+      for (const row of body.prices) {
+        const p = side => mid(row?.[side]?.bid, row?.[side]?.ask);
+        upsert(frame, {
+          time: new Date(row.snapshotTimeUTC || `${row.snapshotTime.replace(' ', 'T')}Z`).toISOString(),
+          open: p('openPrice'), high: p('highPrice'), low: p('lowPrice'), close: p('closePrice'),
+          complete: true, source: 'IG_REST_BOOTSTRAP',
+        });
+      }
+    } catch (e) {
+      state.lastError = `IG bootstrap ${frame}: ${e.message}`;
+    }
+  }
+  await persist().catch(e => { state.lastError = `persist: ${e.message}`; });
+}
+
 function subscribeChart(scale, frame) {
   const fields = ['UTM','BID_OPEN','BID_HIGH','BID_LOW','BID_CLOSE','OFR_OPEN','OFR_HIGH','OFR_LOW','OFR_CLOSE','CONS_END'];
   const sub = new Subscription('MERGE', [`CHART:${cfg.epic}:${scale}`], fields);
@@ -170,6 +210,7 @@ function subscribeChart(scale, frame) {
 async function connect() {
   state.status = 'CONNECTING';
   const s = await login();
+  await bootstrapFromIg(s);
   if (lsClient) { try { lsClient.disconnect(); } catch {} }
   lsClient = new LightstreamerClient(s.endpoint);
   lsClient.connectionDetails.setUser(s.accountId);
