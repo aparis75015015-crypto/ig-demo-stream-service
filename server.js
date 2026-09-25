@@ -245,6 +245,10 @@ app.get('/health', (_req, res) => {
   const q = quality();
   res.status(q.ok ? 200 : 503).json({ service: 'gold-ig-demo-stream', mode: state.mode, ...q, status: state.status, lastError: state.lastError, bootstrapErrors: state.bootstrapErrors, reconnects: state.reconnects });
 });
+app.post('/health', (_req, res) => {
+  const q = quality();
+  res.status(q.ok ? 200 : 503).json({ service: 'gold-ig-demo-stream', mode: state.mode, ...q, status: state.status, lastError: state.lastError, bootstrapErrors: state.bootstrapErrors, reconnects: state.reconnects });
+});
 app.get('/bundle', (_req, res) => {
   const q = quality();
   res.status(q.ok ? 200 : 503).json({ data_valid: q.ok, source: state.source, mode: state.mode, quote: state.quote, marketStatus: state.marketStatus, candles: state.candles, quality: q });
