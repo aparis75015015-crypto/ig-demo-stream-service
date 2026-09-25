@@ -322,7 +322,7 @@ async function findBitcoin(){
  if(!m?.epic)throw new Error('bitcoin-market-not-found');
  btcMarket={...m,resolvedAt:new Date().toISOString()};return btcMarket;
 }
-app.get('/ig/bitcoin-market',auth,async(_req,res)=>{try{res.json({mode:'IG_DEMO_ONLY',market:await findBitcoin()});}catch(e){res.status(503).json({mode:'IG_DEMO_ONLY',errorCode:'bitcoin-market-unavailable',message:e.message});}});
+app.get('/ig/bitcoin-market',auth,async(_req,res)=>{try{const market=await findBitcoin();res.json({mode:'IG_DEMO_ONLY',market,snapshot:{bid:market.bid,offer:market.offer,marketStatus:market.marketStatus}});}catch(e){res.status(503).json({mode:'IG_DEMO_ONLY',errorCode:'bitcoin-market-unavailable',message:e.message});}});
 app.post('/ig/demo/bitcoin-order',auth,async(req,res)=>{
  try{
   const market=btcMarket||await findBitcoin();
