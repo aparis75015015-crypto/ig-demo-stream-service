@@ -1,3 +1,4 @@
+import express from 'express';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { LightstreamerClient, Subscription } from 'lightstreamer-client-node';
